@@ -11,10 +11,26 @@
 
 export interface Env {
   DB: D1Database;
+  GITHUB_TOKEN: string;  // Secret: fine-grained PAT with Issues write on catdef/catdef-spec
 }
 
-const SPEC_URL = "https://github.com/thingalog/thingalog-spec/blob/main/CATDEF_SPEC.md";
-const REPO_URL = "https://github.com/thingalog/thingalog-spec";
+const SPEC_URL = "https://github.com/catdef/catdef-spec/blob/main/CATDEF_SPEC.md";
+const REPO_URL = "https://github.com/catdef/catdef-spec";
+const GITHUB_REPO = "catdef/catdef-spec";
+
+const TYPE_LABELS: Record<string, string> = {
+  feature_request: "RFE",
+  bug: "RFE",
+  gap: "RFE",
+  clarification: "RFE",
+  success_story: "success-story",
+};
+
+const SEVERITY_LABELS: Record<string, string> = {
+  blocker: "severity: blocker",
+  major: "severity: major",
+  minor: "severity: minor",
+};
 
 const VALID_TYPES = ["feature_request", "bug", "gap", "clarification", "success_story"];
 const VALID_SEVERITIES = ["minor", "major", "blocker"];
@@ -57,7 +73,96 @@ async function checkRateLimit(db: D1Database, ipHash: string): Promise<boolean> 
   return (result?.count ?? 0) < RATE_LIMIT;
 }
 
-// ── Landing Page ───────────────���─────────────────────────────
+// ── GitHub Issue Creation ────────────────────────────────────
+
+async function createGitHubIssue(
+  env: Env,
+  publicId: string,
+  type: string,
+  severity: string,
+  agent: string,
+  catdefVersion: string,
+  context: string,
+  fieldType: string | null,
+  message: string,
+): Promise<string | null> {
+  if (!env.GITHUB_TOKEN) return null;
+
+  const typeLabel = TYPE_LABELS[type] ?? "RFE";
+  const sevLabel = SEVERITY_LABELS[severity] ?? "severity: minor";
+
+  const title = `[${publicId}] ${type === "success_story" ? "🎉 " : ""}${message.slice(0, 100)}${message.length > 100 ? "..." : ""}`;
+
+  const bodyParts = [
+    `**${publicId}** — filed via catdef.org/feedback`,
+    "",
+    `| Field | Value |`,
+    `|-------|-------|`,
+    `| Type | \`${type}\` |`,
+    `| Severity | \`${severity}\` |`,
+    `| Agent | \`${agent}\` |`,
+    `| catdef version | \`${catdefVersion}\` |`,
+    fieldType ? `| Field type | \`${fieldType}\` |` : null,
+    context ? `| Context | ${context} |` : null,
+    "",
+    "## Description",
+    "",
+    message,
+    "",
+    "---",
+    "*Filed automatically via [catdef.org](https://catdef.org). Discuss and vote with reactions.*",
+  ].filter(Boolean).join("\n");
+
+  const labels = [typeLabel, sevLabel, `catdef-${catdefVersion}`, `agent:${agent.split(" ")[0]}`];
+
+  try {
+    const resp = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/issues`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "catdef-org-worker",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({
+        title,
+        body: bodyParts,
+        labels,
+      }),
+    });
+
+    if (resp.ok) {
+      const issue = await resp.json() as { html_url: string };
+      return issue.html_url;
+    }
+
+    // If labels don't exist yet, retry without them
+    const resp2 = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/issues`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "catdef-org-worker",
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+      body: JSON.stringify({
+        title,
+        body: bodyParts,
+      }),
+    });
+
+    if (resp2.ok) {
+      const issue = await resp2.json() as { html_url: string };
+      return issue.html_url;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Landing Page ────────────────────────────────────────────
 
 function landingPage(): Response {
   const html = `<!DOCTYPE html>
@@ -97,12 +202,14 @@ function landingPage(): Response {
 <body>
   <div class="container">
     <h1><span>catdef</span>.org</h1>
-    <p class="tagline">The open standard for catalog definitions.</p>
+    <p class="tagline">The open standard for machine-enhanceable descriptors of real-world objects and catalogs.</p>
 
     <p class="description">
-      A <strong>catdef</strong> is a single JSON document that fully describes a catalog application
-      for classifying any kind of collection. Any conforming runtime can read a catdef and render a
-      working, interactive catalog — from a browser to a Cloudflare Worker to an AI agent.
+      <strong>catdef</strong> defines two complementary concepts:
+      <strong>OpenThing</strong> — a schema for describing any real-world object, and
+      <strong>OpenCatalog</strong> — a schema for organizing collections of things.
+      Any conforming runtime can read a catdef and render a working application.
+      An AI that can see a photograph can write a catdef.
     </p>
 
     <div class="links">
@@ -219,7 +326,24 @@ export default {
           ipHash,
         ).run();
 
-        return json({ ok: true, id: publicId, message: "Feedback received. Thank you." }, 201);
+        // Create GitHub issue for public discussion
+        const issueUrl = await createGitHubIssue(
+          env, publicId, type, severity,
+          String(body.agent ?? "unknown"),
+          String(body.catdef_version ?? "1.1"),
+          String(body.context ?? ""),
+          body.field_type ? String(body.field_type) : null,
+          message,
+        );
+
+        return json({
+          ok: true,
+          id: publicId,
+          issue_url: issueUrl,
+          message: issueUrl
+            ? "Feedback received. Discuss at the GitHub issue."
+            : "Feedback received. Thank you.",
+        }, 201);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Unknown error";
         return json({ error: "Invalid JSON body", detail: msg }, 400);
