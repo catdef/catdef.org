@@ -1,0 +1,12 @@
+name = "catdef-org"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "catdef-feedback"
+database_id = "a6ba4ce1-9af6-4d67-ad60-95923414dab4"
+
+[vars]
+ENVIRONMENT = "production"
