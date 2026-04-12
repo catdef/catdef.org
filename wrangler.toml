@@ -2,6 +2,10 @@ name = "catdef-org"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 workers_dev = true
+routes = [
+  { pattern = "catdef.org/*", zone_name = "catdef.org" },
+  { pattern = "www.catdef.org/*", zone_name = "catdef.org" },
+]
 
 [[d1_databases]]
 binding = "DB"

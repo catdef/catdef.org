@@ -162,6 +162,262 @@ async function createGitHubIssue(
   }
 }
 
+// ── Reference Renderer ──────────────────────────────────────
+
+function renderPage(): Response {
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>catdef — Reference Renderer</title>
+<style>
+:root { --accent:#6366f1; --bg:#f8fafc; --panel:#fff; --ink:#1e293b; --muted:#64748b; --border:#e2e8f0; }
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--ink);min-height:100vh}
+.header{background:var(--ink);color:var(--bg);padding:16px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:50}
+.header h1{font-size:18px;font-weight:700}
+.header .tagline{font-size:13px;opacity:0.6}
+.header .spacer{flex:1}
+.header .stats{font-size:12px;opacity:0.5}
+.toolbar{padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--border);background:var(--panel)}
+.search-input{flex:1;min-width:180px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--ink);font-size:14px}
+.search-input:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.sort-select{padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--ink);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;padding:20px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;cursor:pointer;transition:box-shadow 0.2s}
+.card:hover{box-shadow:0 4px 12px rgba(0,0,0,0.08)}
+.card-img{width:100%;aspect-ratio:4/3;background:var(--border);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:32px}
+.card-body{padding:12px}
+.card-title{font-size:14px;font-weight:600;margin-bottom:4px}
+.card-sub{font-size:12px;color:var(--muted)}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100;align-items:center;justify-content:center}
+.modal-overlay.open{display:flex}
+.modal{background:var(--panel);border-radius:12px;max-width:640px;width:90%;max-height:85vh;overflow-y:auto;padding:24px}
+.modal h2{font-size:18px;margin-bottom:16px}
+.modal .close{float:right;background:none;border:none;font-size:24px;cursor:pointer;color:var(--muted)}
+.field{margin-bottom:12px}
+.field-label{font-size:11px;text-transform:uppercase;color:var(--muted);margin-bottom:2px;letter-spacing:0.05em}
+.field-value{font-size:14px}
+.chip{display:inline-block;padding:2px 8px;background:var(--bg);border:1px solid var(--border);border-radius:12px;font-size:12px;margin:2px}
+.drop-zone{border:3px dashed var(--border);border-radius:16px;padding:60px 40px;text-align:center;margin:40px auto;max-width:500px;cursor:pointer;transition:border-color 0.2s}
+.drop-zone:hover,.drop-zone.dragover{border-color:var(--accent)}
+.drop-zone h2{font-size:20px;margin-bottom:8px}
+.drop-zone p{color:var(--muted);font-size:14px}
+.drop-zone .formats{margin-top:12px;font-size:12px;color:var(--muted)}
+.drop-zone input[type=file]{display:none}
+.powered{text-align:center;padding:20px;font-size:12px;color:var(--muted)}
+.powered a{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<div id="picker">
+  <div class="header">
+    <h1>catdef</h1>
+    <span class="tagline">Reference Renderer</span>
+  </div>
+  <div class="drop-zone" id="dropZone">
+    <h2>Open a catdef file</h2>
+    <p>Drop a file here or click to browse</p>
+    <div class="formats">.openthing &nbsp; .opencatalog &nbsp; .catdef &nbsp; .thingalog</div>
+    <input type="file" id="fileInput" accept=".openthing,.opencatalog,.catdef,.thingalog,.json">
+  </div>
+  <div class="powered">L1 Reference Renderer &middot; <a href="https://github.com/catdef/catdef-spec">catdef standard</a></div>
+</div>
+<div id="app" style="display:none">
+  <div class="header" id="appHeader"></div>
+  <div class="toolbar">
+    <input class="search-input" id="searchInput" placeholder="Search...">
+    <select class="sort-select" id="sortSelect"></select>
+  </div>
+  <div class="grid" id="grid"></div>
+</div>
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal" id="modal"></div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const dropZone = $('#dropZone');
+const fileInput = $('#fileInput');
+let DATA = null;
+
+// File picker
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); handleFile(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+
+function handleFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      const json = JSON.parse(e.target.result);
+      loadCatdef(json);
+    } catch (err) {
+      alert('Invalid JSON: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function loadCatdef(json) {
+  // Normalize: handle catio envelope or raw catdef
+  let product = json.product || {};
+  let templates = json.templates || [];
+  let items = [];
+  let values = {};
+
+  if (json.type === 'thing' && json.thing) {
+    // Single .openthing — wrap in a minimal catalog
+    product = { name: json.thing.fields?.Title || json.thing.template || 'Thing', slug: 'thing' };
+    templates = [{ name: json.thing.template || 'Thing', field_defs: inferFieldDefs(json.thing.fields) }];
+    items = [json.thing];
+    values = {};
+  } else if (json.type === 'schema') {
+    // .catdef — schema only, no items
+    product = { name: 'Schema Preview', slug: 'schema' };
+  } else {
+    // .opencatalog or legacy .thingalog
+    items = (json.data && json.data.items) || [];
+    values = (json.data && json.data.values) || {};
+  }
+
+  // Apply theme
+  if (product.theme && typeof product.theme === 'object') {
+    const r = document.documentElement.style;
+    Object.entries(product.theme).forEach(([k,v]) => {
+      if (typeof v === 'string') r.setProperty('--' + k.replace(/_/g,'-'), v);
+    });
+  }
+
+  DATA = { product, templates, items, values };
+
+  // Render header
+  $('#appHeader').innerHTML =
+    '<h1>' + esc(product.name || 'Catalog') + '</h1>' +
+    (product.tagline ? '<span class="tagline">' + esc(product.tagline) + '</span>' : '') +
+    '<span class="spacer"></span>' +
+    '<span class="stats">' + items.length + ' items</span>';
+
+  // Build sort options from first template
+  const sortSelect = $('#sortSelect');
+  sortSelect.innerHTML = '';
+  if (templates[0]) {
+    templates[0].field_defs.forEach(fd => {
+      if (['String','Integer','Number','Date'].includes(fd.type)) {
+        sortSelect.innerHTML += '<option value="' + esc(fd.label) + '">' + esc(fd.label) + '</option>';
+      }
+    });
+  }
+
+  // Show app, hide picker
+  $('#picker').style.display = 'none';
+  $('#app').style.display = '';
+
+  renderGrid(items);
+
+  // Search
+  let debounce;
+  $('#searchInput').addEventListener('input', e => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      const q = e.target.value.toLowerCase();
+      const filtered = items.filter(item => {
+        const fields = item.fields || {};
+        return Object.values(fields).some(v => String(v).toLowerCase().includes(q));
+      });
+      renderGrid(filtered);
+    }, 200);
+  });
+
+  // Sort
+  sortSelect.addEventListener('change', () => {
+    const field = sortSelect.value;
+    const sorted = [...items].sort((a,b) => {
+      const va = (a.fields||{})[field] || '';
+      const vb = (b.fields||{})[field] || '';
+      if (typeof va === 'number' && typeof vb === 'number') return va - vb;
+      return String(va).localeCompare(String(vb));
+    });
+    renderGrid(sorted);
+  });
+}
+
+function inferFieldDefs(fields) {
+  if (!fields) return [];
+  return Object.entries(fields).map(([label, value], i) => {
+    let type = 'String';
+    if (typeof value === 'number') type = Number.isInteger(value) ? 'Integer' : 'Number';
+    else if (typeof value === 'boolean') type = 'Boolean';
+    else if (typeof value === 'object' && value && value.value && value.unit) type = 'Number';
+    return { label, type, sort_order: (i+1)*10 };
+  });
+}
+
+function renderGrid(items) {
+  const grid = $('#grid');
+  grid.innerHTML = '';
+  if (!items.length) {
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--muted)"><div style="font-size:48px;margin-bottom:12px">📦</div><h3>No items found</h3></div>';
+    return;
+  }
+  items.forEach((item, idx) => {
+    const fields = item.fields || {};
+    const title = fields.Title || fields.Name || fields.title || fields.name || '(untitled)';
+    const sub = Object.entries(fields).filter(([k]) => !['Title','Name','title','name','Notes','Description','Photos'].includes(k)).slice(0,2).map(([k,v]) => typeof v === 'object' ? JSON.stringify(v) : v).join(' · ');
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = '<div class="card-img">📷</div><div class="card-body"><div class="card-title">' + esc(title) + '</div><div class="card-sub">' + esc(sub) + '</div></div>';
+    card.onclick = () => showModal(item);
+    grid.appendChild(card);
+  });
+}
+
+function showModal(item) {
+  const fields = item.fields || {};
+  const template = DATA.templates.find(t => t.name === item.template) || { field_defs: inferFieldDefs(fields) };
+  let html = '<button class="close" onclick="closeModal()">&times;</button>';
+  html += '<h2>' + esc(fields.Title || fields.Name || item.template || 'Item') + '</h2>';
+
+  template.field_defs.forEach(fd => {
+    const val = fields[fd.label];
+    if (val === undefined || val === null || val === '') return;
+    html += '<div class="field"><div class="field-label">' + esc(fd.label) + '</div><div class="field-value">';
+    if (typeof val === 'object' && val.value !== undefined && val.unit) {
+      html += esc(val.value + ' ' + val.unit);
+    } else if (Array.isArray(val)) {
+      html += val.map(v => '<span class="chip">' + esc(v) + '</span>').join('');
+    } else {
+      html += esc(String(val));
+    }
+    html += '</div></div>';
+  });
+
+  // Show any fields not in template
+  Object.entries(fields).forEach(([k,v]) => {
+    if (template.field_defs.some(fd => fd.label === k)) return;
+    if (v === undefined || v === null || v === '') return;
+    html += '<div class="field"><div class="field-label">' + esc(k) + '</div><div class="field-value">' + esc(typeof v === 'object' ? JSON.stringify(v) : String(v)) + '</div></div>';
+  });
+
+  $('#modal').innerHTML = html;
+  $('#modalOverlay').classList.add('open');
+}
+
+function closeModal() { $('#modalOverlay').classList.remove('open'); }
+$('#modalOverlay').addEventListener('click', e => { if (e.target === $('#modalOverlay')) closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+</script>
+</body>
+</html>`;
+  return new Response(html, {
+    headers: { "Content-Type": "text/html;charset=UTF-8" },
+  });
+}
+
 // ── Landing Page ────────────────────────────────────────────
 
 function landingPage(): Response {
@@ -213,6 +469,7 @@ function landingPage(): Response {
     </p>
 
     <div class="links">
+      <a href="/render">Reference Renderer</a>
       <a href="${SPEC_URL}">Read the Spec</a>
       <a href="${REPO_URL}">GitHub</a>
       <a href="${REPO_URL}/tree/main/conformance">Test Suite</a>
@@ -271,6 +528,11 @@ export default {
     // GET / — landing page
     if (pathname === "/" && request.method === "GET") {
       return landingPage();
+    }
+
+    // GET /render — L1 reference renderer with file picker
+    if (pathname === "/render" && request.method === "GET") {
+      return renderPage();
     }
 
     // GET /spec — redirect to GitHub
