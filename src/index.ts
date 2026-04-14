@@ -219,8 +219,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-seri
   <div class="drop-zone" id="dropZone">
     <h2>Open a catdef file</h2>
     <p>Drop a file here or click to browse</p>
-    <div class="formats">.openthing &nbsp; .opencatalog &nbsp; .catdef &nbsp; .thingalog</div>
-    <input type="file" id="fileInput" accept=".openthing,.opencatalog,.catdef,.thingalog,.json">
+    <div class="formats">.openthing &nbsp; .opencatalog &nbsp; .catdef</div>
+    <input type="file" id="fileInput" accept=".openthing,.opencatalog,.catdef,.json">
   </div>
   <div class="powered">L1 Reference Renderer &middot; <a href="https://github.com/catdef/catdef-spec">catdef standard</a></div>
 </div>
@@ -278,7 +278,7 @@ function loadCatdef(json) {
     // .catdef — schema only, no items
     product = { name: 'Schema Preview', slug: 'schema' };
   } else {
-    // .opencatalog or legacy .thingalog
+    // .opencatalog
     items = (json.data && json.data.items) || [];
     values = (json.data && json.data.values) || {};
   }
@@ -479,7 +479,7 @@ function landingPage(): Response {
     <div class="section">
       <h2>File Format</h2>
       <p>MIME type: <code>application/vnd.catdef+json</code><br>
-      File extension: <code>.thingalog</code> (with data) or <code>.catdef.json</code> (schema only)</p>
+      File extensions: <code>.opencatalog</code> (catalog with data), <code>.openthing</code> (single object), <code>.catdef</code> (schema only)</p>
     </div>
 
     <div class="section">
