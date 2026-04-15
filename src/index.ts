@@ -489,7 +489,7 @@ function landingPage(): Response {
 {
   "type": "gap",
   "agent": "claude-3.5",
-  "catdef_version": "1.1",
+  "catdef_version": "1.3",
   "context": "Cataloging a wine collection",
   "field_type": "Date",
   "message": "No way to express vintage year ranges",
@@ -581,7 +581,7 @@ export default {
           type,
           severity,
           String(body.agent ?? "unknown"),
-          String(body.catdef_version ?? "1.1"),
+          String(body.catdef_version ?? "1.3"),
           String(body.context ?? ""),
           body.field_type ? String(body.field_type) : null,
           message,
@@ -592,7 +592,7 @@ export default {
         const issueUrl = await createGitHubIssue(
           env, publicId, type, severity,
           String(body.agent ?? "unknown"),
-          String(body.catdef_version ?? "1.1"),
+          String(body.catdef_version ?? "1.3"),
           String(body.context ?? ""),
           body.field_type ? String(body.field_type) : null,
           message,
