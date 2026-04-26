@@ -2,7 +2,10 @@
  * catdef.org — The open standard for catalog definitions.
  *
  * Cloudflare Worker serving:
- *   GET  /           — landing page
+ *   GET  /           — landing page (catdef.org); reference renderer on render.catdef.org
+ *   GET  /render     — L1 reference renderer with file picker
+ *   GET  /fetch?url= — server-side proxy that fetches a remote catdef and returns JSON
+ *                      (used by the renderer's ?url= bootstrap; SSRF-guarded; size-capped; cached)
  *   GET  /spec       — redirect to GitHub spec
  *   POST /feedback   — structured feedback intake (agents + humans)
  *   GET  /feedback   — public feed of all feedback
@@ -160,6 +163,280 @@ async function createGitHubIssue(
   } catch {
     return null;
   }
+}
+
+// ── /fetch — server-side proxy for the URL-loadable renderer ─
+//
+// SSRF defense (best-effort within the Cloudflare Workers runtime):
+//
+//   • https only — http://, file://, ftp://, etc. rejected at the URL layer.
+//   • Hostname blocklist — localhost, 127.0.0.1, ::1, *.local, *.internal,
+//     *.localhost rejected by direct match / suffix match.
+//   • Private-IP literal blocklist — IPv4 ranges 10/8, 172.16/12, 192.168/16,
+//     127/8, 169.254/16, 100.64/10 (CGNAT), 0/8 rejected. IPv6 ::1, ::,
+//     fc00::/7, fe80::/10, and IPv4-mapped (::ffff:x.x.x.x) rejected.
+//   • Redirects — handled manually with a 3-redirect cap and a re-check of
+//     the SSRF guard against each redirect target. A redirect to localhost
+//     is the classic SSRF bypass; this prevents it.
+//   • Method — GET only on the upstream call.
+//   • Size cap — 5 MB, enforced via Content-Length first then streamed-read.
+//   • Timeout — 10 seconds total (AbortController).
+//
+// The one defense Workers can't run cheaply: pre-resolving the hostname's
+// DNS records and rejecting if any A/AAAA points to a private IP. The
+// Workers runtime does not expose a DNS-resolution API; fetch() resolves
+// at Cloudflare's edge. The practical SSRF surface is therefore limited
+// by Cloudflare's egress behaviour (it does not route to RFC1918 from edge
+// PoPs) plus the literal-IP and hostname-suffix checks above. An attacker
+// who controls a public DNS record pointing to a private IP would still
+// be filtered by Cloudflare's egress, but that is environmental defense
+// rather than in-Worker defense — call out in the PR if this matters.
+
+const PRIVATE_HOSTNAMES = new Set([
+  "localhost",
+  "127.0.0.1",
+  "0.0.0.0",
+  "::1",
+  "::",
+  "0:0:0:0:0:0:0:0",
+  "0:0:0:0:0:0:0:1",
+]);
+
+const PRIVATE_HOSTNAME_SUFFIXES = [".local", ".internal", ".localhost"];
+
+const FETCH_TIMEOUT_MS = 10_000;
+const FETCH_MAX_BYTES = 5 * 1024 * 1024;
+const FETCH_MAX_REDIRECTS = 3;
+const CACHE_TTL_OK_SECONDS = 300;
+const CACHE_TTL_ERR_SECONDS = 30;
+
+function isPrivateIPv4(host: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return false;
+  const o = m.slice(1).map(Number);
+  if (o.some(n => n < 0 || n > 255)) return false;
+  if (o[0] === 10) return true;                                  // 10.0.0.0/8
+  if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true;     // 172.16.0.0/12
+  if (o[0] === 192 && o[1] === 168) return true;                 // 192.168.0.0/16
+  if (o[0] === 127) return true;                                 // 127.0.0.0/8 loopback
+  if (o[0] === 169 && o[1] === 254) return true;                 // 169.254.0.0/16 link-local
+  if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return true;    // 100.64.0.0/10 CGNAT
+  if (o[0] === 0) return true;                                   // 0.0.0.0/8
+  return false;
+}
+
+function isPrivateIPv6(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!h.includes(":")) return false;
+  if (h === "::1" || h === "0:0:0:0:0:0:0:1") return true;       // loopback
+  if (h === "::" || h === "0:0:0:0:0:0:0:0") return true;        // unspecified
+  if (/^f[cd]/.test(h)) return true;                             // fc00::/7 unique-local
+  const firstSeg = /^([0-9a-f]{1,4}):/.exec(h);
+  if (firstSeg) {
+    const seg = parseInt(firstSeg[1], 16);
+    if (seg >= 0xfe80 && seg <= 0xfebf) return true;             // fe80::/10 link-local
+  }
+  // IPv4-mapped IPv6 (::ffff:0:0/96). URL.hostname canonicalizes the dotted
+  // form to two hex segments — `::ffff:127.0.0.1` becomes `::ffff:7f00:1`.
+  // Handle both shapes; convert the hex form to dotted and re-check.
+  const v4mappedDotted = /::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(h);
+  if (v4mappedDotted && isPrivateIPv4(v4mappedDotted[1])) return true;
+  const v4mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+  if (v4mappedHex) {
+    const hi = parseInt(v4mappedHex[1], 16);
+    const lo = parseInt(v4mappedHex[2], 16);
+    const ipv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    if (isPrivateIPv4(ipv4)) return true;
+  }
+  return false;
+}
+
+type SSRFResult = { ok: true; url: URL } | { ok: false; reason: string; status: number };
+
+function ssrfCheck(rawUrl: string): SSRFResult {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return { ok: false, reason: "Invalid URL", status: 400 };
+  }
+  if (url.protocol !== "https:") {
+    return { ok: false, reason: "Only https:// URLs are accepted", status: 400 };
+  }
+  const host = url.hostname.toLowerCase();
+  if (PRIVATE_HOSTNAMES.has(host)) {
+    return { ok: false, reason: `Hostname '${host}' is blocked`, status: 400 };
+  }
+  if (PRIVATE_HOSTNAME_SUFFIXES.some(suffix => host.endsWith(suffix))) {
+    return { ok: false, reason: `Hostname suffix is blocked (${PRIVATE_HOSTNAME_SUFFIXES.join(", ")})`, status: 400 };
+  }
+  if (isPrivateIPv4(host)) {
+    return { ok: false, reason: "Private IPv4 address", status: 400 };
+  }
+  if (isPrivateIPv6(host)) {
+    return { ok: false, reason: "Private IPv6 address", status: 400 };
+  }
+  return { ok: true, url };
+}
+
+type UpstreamResult = {
+  status: number;
+  body: string | null;
+  contentType: string | null;
+  error?: string;
+  finalUrl?: string;
+};
+
+async function fetchUpstream(rawUrl: string): Promise<UpstreamResult> {
+  let currentUrl = rawUrl;
+  let redirects = 0;
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    while (true) {
+      const guard = ssrfCheck(currentUrl);
+      if (!guard.ok) {
+        return { status: guard.status, body: null, contentType: null, error: guard.reason };
+      }
+
+      const resp = await fetch(guard.url.toString(), {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+        headers: {
+          "User-Agent": "catdef-org-renderer-fetch/1.0 (+https://catdef.org)",
+          "Accept": "application/json, application/vnd.catdef+json, application/vnd.opencatalog+json, application/vnd.openthing+json, */*",
+        },
+      });
+
+      if (resp.status >= 300 && resp.status < 400) {
+        const loc = resp.headers.get("Location");
+        if (!loc) {
+          return { status: 502, body: null, contentType: null, error: "Upstream redirect without Location" };
+        }
+        if (++redirects > FETCH_MAX_REDIRECTS) {
+          return { status: 502, body: null, contentType: null, error: `Too many redirects (>${FETCH_MAX_REDIRECTS})` };
+        }
+        try {
+          currentUrl = new URL(loc, currentUrl).toString();
+        } catch {
+          return { status: 502, body: null, contentType: null, error: "Upstream redirect to invalid URL" };
+        }
+        continue;
+      }
+
+      const contentLength = resp.headers.get("Content-Length");
+      if (contentLength && Number(contentLength) > FETCH_MAX_BYTES) {
+        return { status: 413, body: null, contentType: null, error: `Upstream Content-Length ${contentLength} exceeds ${FETCH_MAX_BYTES}` };
+      }
+
+      if (!resp.ok) {
+        return { status: 502, body: null, contentType: null, error: `Upstream returned HTTP ${resp.status}` };
+      }
+
+      const reader = resp.body?.getReader();
+      if (!reader) {
+        return { status: 502, body: null, contentType: null, error: "Upstream returned no body" };
+      }
+
+      let received = 0;
+      const chunks: Uint8Array[] = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        received += value.byteLength;
+        if (received > FETCH_MAX_BYTES) {
+          try { await reader.cancel(); } catch { /* noop */ }
+          return { status: 413, body: null, contentType: null, error: `Upstream body exceeded ${FETCH_MAX_BYTES} bytes` };
+        }
+        chunks.push(value);
+      }
+
+      const buf = new Uint8Array(received);
+      let pos = 0;
+      for (const c of chunks) { buf.set(c, pos); pos += c.byteLength; }
+
+      let body: string;
+      try {
+        body = new TextDecoder("utf-8", { fatal: true }).decode(buf);
+      } catch {
+        return { status: 502, body: null, contentType: null, error: "Upstream body is not valid UTF-8" };
+      }
+
+      return {
+        status: 200,
+        body,
+        contentType: resp.headers.get("Content-Type"),
+        finalUrl: currentUrl,
+      };
+    }
+  } catch (e: unknown) {
+    if (e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError")) {
+      return { status: 504, body: null, contentType: null, error: `Upstream timeout (>${FETCH_TIMEOUT_MS}ms)` };
+    }
+    return { status: 502, body: null, contentType: null, error: e instanceof Error ? e.message : "Upstream fetch failed" };
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+}
+
+async function handleFetchRoute(request: Request, ctx: ExecutionContext): Promise<Response> {
+  if (request.method !== "GET") {
+    return json({ error: "Method not allowed; GET only" }, 405);
+  }
+  const reqUrl = new URL(request.url);
+  const target = reqUrl.searchParams.get("url");
+  if (!target) {
+    return json({ error: "Missing required query parameter: url" }, 400);
+  }
+
+  // Cache key uses the request URL (the /fetch?url=... URL itself).
+  // Note: catdef.org/fetch?url=X and render.catdef.org/fetch?url=X cache as
+  // separate entries because the request URL hostname differs. Acceptable
+  // duplication for v1; optimisation deferred.
+  // `caches.default` is the Workers-specific extension to the standard
+  // CacheStorage interface; cast to access it without depending on which
+  // version of @cloudflare/workers-types is in scope.
+  const cache = (caches as unknown as { default: Cache }).default;
+  const cacheKey = new Request(reqUrl.toString(), { method: "GET" });
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
+  const result = await fetchUpstream(target);
+
+  let response: Response;
+  if (result.status === 200 && result.body) {
+    response = new Response(result.body, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": `public, max-age=${CACHE_TTL_OK_SECONDS}`,
+        "X-Upstream-Content-Type": result.contentType ?? "unknown",
+        "X-Upstream-Url": result.finalUrl ?? target,
+        ...corsHeaders(),
+      },
+    });
+  } else {
+    // Wrap upstream errors; do not leak upstream response bodies verbatim.
+    response = new Response(JSON.stringify({
+      error: result.error ?? "Upstream fetch failed",
+      upstream_url: target,
+    }, null, 2), {
+      status: result.status,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": `public, max-age=${CACHE_TTL_ERR_SECONDS}`,
+        ...corsHeaders(),
+      },
+    });
+  }
+
+  // Async cache write — don't block client response.
+  ctx.waitUntil(cache.put(cacheKey, response.clone()));
+
+  return response;
 }
 
 // ── Reference Renderer ──────────────────────────────────────
@@ -410,6 +687,43 @@ $('#modalOverlay').addEventListener('click', e => { if (e.target === $('#modalOv
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+// ── URL bootstrap ────────────────────────────────────────────
+// If the page is loaded with ?url=<u>, fetch the catdef via the server-side
+// /fetch proxy (browser-side cross-origin fetches break for many hosts) and
+// hand the parsed JSON to loadCatdef(). When no ?url= is present, the
+// existing file-picker behaviour is unchanged.
+(async function bootstrap() {
+  const params = new URLSearchParams(window.location.search);
+  const remoteUrl = params.get('url');
+  if (!remoteUrl) return;
+
+  // Replace the file picker with a loading state. Do not show #app until we
+  // have data — loadCatdef() will swap visibility on success.
+  dropZone.innerHTML =
+    '<h2>Loading…</h2>' +
+    '<p>Fetching <code>' + esc(remoteUrl) + '</code></p>';
+
+  try {
+    const resp = await fetch('/fetch?url=' + encodeURIComponent(remoteUrl));
+    if (!resp.ok) {
+      let detail = 'HTTP ' + resp.status;
+      try {
+        const errBody = await resp.json();
+        if (errBody && errBody.error) detail = errBody.error;
+      } catch (_) { /* upstream wrapper or non-JSON; keep detail */ }
+      throw new Error(detail);
+    }
+    const json = await resp.json();
+    loadCatdef(json);
+  } catch (err) {
+    dropZone.innerHTML =
+      '<h2 style="color:#dc2626">Could not load</h2>' +
+      '<p style="margin-top:8px">' + esc(err && err.message ? err.message : String(err)) + '</p>' +
+      '<p class="formats" style="margin-top:16px;word-break:break-all">URL: <code>' + esc(remoteUrl) + '</code></p>' +
+      '<p class="formats" style="margin-top:12px"><a href="' + esc(window.location.pathname) + '" style="color:var(--accent)">Open a different file</a></p>';
+  }
+})();
 </script>
 </body>
 </html>`;
@@ -516,23 +830,29 @@ function landingPage(): Response {
 // ── Request Handler ──────────────────────────────────────────
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const { pathname } = url;
+    const isRenderHost = url.hostname === "render.catdef.org";
 
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    // GET / — landing page
+    // GET / — landing page on catdef.org / www; reference renderer on render.catdef.org
     if (pathname === "/" && request.method === "GET") {
-      return landingPage();
+      return isRenderHost ? renderPage() : landingPage();
     }
 
     // GET /render — L1 reference renderer with file picker
     if (pathname === "/render" && request.method === "GET") {
       return renderPage();
+    }
+
+    // GET /fetch?url= — server-side proxy for the URL-loadable renderer
+    if (pathname === "/fetch" && request.method === "GET") {
+      return handleFetchRoute(request, ctx);
     }
 
     // GET /spec — redirect to GitHub
