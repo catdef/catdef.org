@@ -5,6 +5,7 @@ workers_dev = true
 routes = [
   { pattern = "catdef.org/*", zone_name = "catdef.org" },
   { pattern = "www.catdef.org/*", zone_name = "catdef.org" },
+  { pattern = "render.catdef.org/*", zone_name = "catdef.org" },
 ]
 
 [[d1_databases]]
