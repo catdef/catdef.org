@@ -517,6 +517,12 @@ const $ = s => document.querySelector(s);
 const dropZone = $('#dropZone');
 const fileInput = $('#fileInput');
 let DATA = null;
+// Source URL the current document was loaded from (set by bootstrap() when
+// the page is opened with ?url=<u>). Used by resolveRenderableLink to
+// resolve relative paths inside catalog entries (e.g. "roledefs/x.openthing"
+// becomes an absolute URL relative to the catalog's directory). Null when
+// the document was loaded via the file picker.
+let CATALOG_SOURCE_URL = null;
 
 // File picker
 dropZone.addEventListener('click', () => fileInput.click());
@@ -575,6 +581,54 @@ function fieldSource(item) {
     out[k] = item[k];
   }
   return out;
+}
+
+// ── Renderable-path linkification ────────────────────────────
+// File extensions the renderer can render. Path-extension test strips any
+// query/fragment first so "https://host/x.opencatalog?ref=main" still counts.
+const RENDERABLE_EXT_RE = /\.(openthing|opencatalog|catdef)$/i;
+
+// Given a string field value, return an absolute URL the renderer can load
+// (via ?url=...), or null if the value isn't a renderable path. Resolution:
+//   - absolute (https://... or //host/...) ending in renderable ext → as-is
+//   - relative (no scheme, doesn't start with /) ending in renderable ext
+//     AND CATALOG_SOURCE_URL is set → new URL(value, CATALOG_SOURCE_URL)
+//   - everything else (incl. /-rooted absolute paths, .md/.json/etc., and
+//     relative paths when no CATALOG_SOURCE_URL is known) → null
+function resolveRenderableLink(value) {
+  if (typeof value !== 'string') return null;
+  const v = value.trim();
+  if (!v) return null;
+  const pathOnly = v.replace(/[?#].*$/, '');
+  if (!RENDERABLE_EXT_RE.test(pathOnly)) return null;
+  if (/^(https?:)?\/\//i.test(v)) return v;
+  if (!v.startsWith('/') && CATALOG_SOURCE_URL) {
+    try {
+      return new URL(v, CATALOG_SOURCE_URL).toString();
+    } catch (_) {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Render a scalar value as HTML. Wraps in an in-page link when the value is
+// a renderable path. Used for individual scalars and inside Array chips.
+//   opts.stopPropagation — emit onclick="event.stopPropagation()" on the
+//     anchor so a click inside a card doesn't also trigger the card's modal-
+//     open handler.
+function renderScalarValue(v, opts) {
+  opts = opts || {};
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'object') return esc(JSON.stringify(v));
+  if (typeof v === 'string') {
+    const link = resolveRenderableLink(v);
+    if (link) {
+      const stop = opts.stopPropagation ? ' onclick="event.stopPropagation()"' : '';
+      return '<a href="?url=' + encodeURIComponent(link) + '"' + stop + '>' + esc(v) + '</a>';
+    }
+  }
+  return esc(String(v));
 }
 
 function loadCatdef(json) {
@@ -730,19 +784,25 @@ function renderGrid(items) {
       || fieldOf(item, 'id')
       || '(untitled)';
     // Prefer an explicit description-family field; fall back to the legacy
-    // top-two-other-fields concat for items that don't carry one.
-    let sub = fieldOf(item, 'Description') || fieldOf(item, 'description') || '';
-    if (!sub) {
+    // top-two-other-fields concat for items that don't carry one. Each
+    // value goes through renderScalarValue so renderable paths in the
+    // fallback concat become clickable. stopPropagation on those anchors
+    // so a click on the link doesn't also fire the card-opens-modal handler.
+    let subHtml;
+    const desc = fieldOf(item, 'Description') || fieldOf(item, 'description');
+    if (desc) {
+      subHtml = renderScalarValue(desc, { stopPropagation: true });
+    } else {
       const src = fieldSource(item);
-      sub = Object.entries(src)
+      subHtml = Object.entries(src)
         .filter(([k]) => !['Title','Name','title','name','id','Notes','Description','description','Photos'].includes(k))
         .slice(0, 2)
-        .map(([k,v]) => typeof v === 'object' ? JSON.stringify(v) : v)
+        .map(([k,v]) => renderScalarValue(v, { stopPropagation: true }))
         .join(' · ');
     }
     const card = document.createElement('div');
     card.className = 'card';
-    card.innerHTML = '<div class="card-img">📷</div><div class="card-body"><div class="card-title">' + esc(title) + '</div><div class="card-sub">' + esc(sub) + '</div></div>';
+    card.innerHTML = '<div class="card-img">📷</div><div class="card-body"><div class="card-title">' + esc(title) + '</div><div class="card-sub">' + subHtml + '</div></div>';
     card.onclick = () => showModal(item);
     grid.appendChild(card);
   });
@@ -769,11 +829,13 @@ function showModal(item) {
     if (typeof val === 'object' && val !== null && val.value !== undefined && val.unit) {
       html += esc(val.value + ' ' + val.unit);
     } else if (Array.isArray(val)) {
-      html += val.map(v => '<span class="chip">' + esc(typeof v === 'object' ? JSON.stringify(v) : v) + '</span>').join('');
+      // Each chip is rendered through renderScalarValue so chip strings that
+      // happen to be renderable paths become clickable.
+      html += val.map(v => '<span class="chip">' + renderScalarValue(v) + '</span>').join('');
     } else if (typeof val === 'object' && val !== null) {
       html += '<pre style="white-space:pre-wrap;word-break:break-word;font-size:12px;background:var(--bg);padding:8px;border-radius:4px">' + esc(JSON.stringify(val, null, 2)) + '</pre>';
     } else {
-      html += esc(String(val));
+      html += renderScalarValue(val);
     }
     html += '</div></div>';
   });
@@ -785,7 +847,15 @@ function showModal(item) {
   Object.entries(extras).forEach(([k,v]) => {
     if (template.field_defs.some(fd => fd.label === k)) return;
     if (v === undefined || v === null || v === '') return;
-    html += '<div class="field"><div class="field-label">' + esc(k) + '</div><div class="field-value">' + esc(typeof v === 'object' ? JSON.stringify(v) : String(v)) + '</div></div>';
+    let valHtml;
+    if (Array.isArray(v)) {
+      valHtml = v.map(x => '<span class="chip">' + renderScalarValue(x) + '</span>').join('');
+    } else if (typeof v === 'object' && v !== null) {
+      valHtml = esc(JSON.stringify(v));
+    } else {
+      valHtml = renderScalarValue(v);
+    }
+    html += '<div class="field"><div class="field-label">' + esc(k) + '</div><div class="field-value">' + valHtml + '</div></div>';
   });
 
   $('#modal').innerHTML = html;
@@ -824,6 +894,11 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
       } catch (_) { /* upstream wrapper or non-JSON; keep detail */ }
       throw new Error(detail);
     }
+    // Remember where the document came from so resolveRenderableLink can
+    // turn relative paths (e.g. "roledefs/x.openthing") into absolute URLs.
+    // Prefer the upstream's final URL after redirects when /fetch surfaced
+    // it, otherwise use what the user requested.
+    CATALOG_SOURCE_URL = resp.headers.get('X-Upstream-Url') || remoteUrl;
     const json = await resp.json();
     loadCatdef(json);
   } catch (err) {
