@@ -538,6 +538,45 @@ function handleFile(file) {
   reader.readAsText(file);
 }
 
+// ── catdef-family shape helpers (additive) ──────────────────
+// A namespaced type is "<lowercase-ns>:<CapitalType>" — e.g. roledef:Role,
+// catdef:Strategist. Distinguishes catdef-family flat objects from the
+// legacy {type:"thing",thing:{...}} envelope and the legacy plain "schema"
+// type. When matched and the document carries no .data.items, the whole
+// JSON is treated as one thing.
+const NAMESPACED_TYPE_RE = /^[a-z][a-z0-9_-]*:[A-Z]/;
+
+// A consumer-spec stamp is a top-level key whose key is lowercase and whose
+// value is a semver string — e.g. "roledef": "0.2.0", "catdef": "1.4". These
+// are envelope markers, not renderable fields.
+function isConsumerSpecStamp(key, val) {
+  return typeof val === 'string'
+    && /^\d+\.\d+\.\d+$/.test(val)
+    && /^[a-z][a-z0-9_-]*$/.test(key);
+}
+
+// Tolerant field lookup. Legacy items wrap fields in .fields; catdef-family
+// flat items put fields at the top level. Try .fields first then top-level.
+function fieldOf(item, name) {
+  if (item && item.fields && item.fields[name] !== undefined) return item.fields[name];
+  if (item && item[name] !== undefined) return item[name];
+  return undefined;
+}
+
+// Return the rendering source for an item. Legacy → item.fields. Flat →
+// item itself, minus envelope keys (catdef, type, consumer-spec stamps).
+function fieldSource(item) {
+  if (item && item.fields) return item.fields;
+  if (!item || typeof item !== 'object') return {};
+  const out = {};
+  for (const k in item) {
+    if (k === 'catdef' || k === 'type') continue;
+    if (isConsumerSpecStamp(k, item[k])) continue;
+    out[k] = item[k];
+  }
+  return out;
+}
+
 function loadCatdef(json) {
   // Normalize: handle catio envelope or raw catdef
   let product = json.product || {};
@@ -545,17 +584,45 @@ function loadCatdef(json) {
   let items = [];
   let values = {};
 
+  const isNamespacedType = typeof json.type === 'string' && NAMESPACED_TYPE_RE.test(json.type);
+  const hasCatalogItems = json.data && Array.isArray(json.data.items);
+
   if (json.type === 'thing' && json.thing) {
-    // Single .openthing — wrap in a minimal catalog
+    // Legacy single-thing envelope — wrap in a minimal catalog
     product = { name: json.thing.fields?.Title || json.thing.template || 'Thing', slug: 'thing' };
     templates = [{ name: json.thing.template || 'Thing', field_defs: inferFieldDefs(json.thing.fields) }];
     items = [json.thing];
+    values = {};
+  } else if (isNamespacedType && !hasCatalogItems) {
+    // catdef-family flat single-thing (e.g. roledef:Role). The whole JSON
+    // IS the thing; fields live at the top level. Pre-filter the renderable
+    // set so envelope keys (catdef, roledef, type) and identity keys (id,
+    // name, version - already shown in the page header) don't double-render
+    // in the detail view. Note: identity keys are filtered from .fields
+    // (which drives field-def-based rendering) but kept at the top level via
+    // Object.assign so fieldOf() can still find them for the card title and
+    // modal h2 (which prefer the role name over the type string).
+    const renderable = {};
+    for (const k in json) {
+      if (k === 'catdef' || k === 'type') continue;
+      if (isConsumerSpecStamp(k, json[k])) continue;
+      if (k === 'id' || k === 'name' || k === 'version') continue;
+      renderable[k] = json[k];
+    }
+    product = { name: json.name || json.id || json.type || 'Thing', slug: 'thing' };
+    templates = [{ name: json.type, field_defs: inferFieldDefs(renderable) }];
+    items = [Object.assign({}, json, { template: json.type, fields: renderable })];
     values = {};
   } else if (json.type === 'schema') {
     // .catdef — schema only, no items
     product = { name: 'Schema Preview', slug: 'schema' };
   } else {
-    // .opencatalog
+    // .opencatalog (legacy + catdef-family library shapes like roledef:Library)
+    // Catalog-level product/name fallback for namespaced libraries that
+    // carry their identity at the top level rather than under .product.
+    if (!product.name && (isNamespacedType || json.name)) {
+      product = Object.assign({ name: json.name || json.id || 'Catalog', slug: 'catalog' }, product);
+    }
     items = (json.data && json.data.items) || [];
     values = (json.data && json.data.values) || {};
   }
@@ -594,26 +661,26 @@ function loadCatdef(json) {
 
   renderGrid(items);
 
-  // Search
+  // Search — uses fieldSource so flat (catdef-family) items are searchable too
   let debounce;
   $('#searchInput').addEventListener('input', e => {
     clearTimeout(debounce);
     debounce = setTimeout(() => {
       const q = e.target.value.toLowerCase();
       const filtered = items.filter(item => {
-        const fields = item.fields || {};
-        return Object.values(fields).some(v => String(v).toLowerCase().includes(q));
+        const src = fieldSource(item);
+        return Object.values(src).some(v => String(typeof v === 'object' ? JSON.stringify(v) : v).toLowerCase().includes(q));
       });
       renderGrid(filtered);
     }, 200);
   });
 
-  // Sort
+  // Sort — uses fieldOf so flat items sort on their top-level keys
   sortSelect.addEventListener('change', () => {
     const field = sortSelect.value;
     const sorted = [...items].sort((a,b) => {
-      const va = (a.fields||{})[field] || '';
-      const vb = (b.fields||{})[field] || '';
+      const va = fieldOf(a, field) ?? '';
+      const vb = fieldOf(b, field) ?? '';
       if (typeof va === 'number' && typeof vb === 'number') return va - vb;
       return String(va).localeCompare(String(vb));
     });
@@ -621,13 +688,29 @@ function loadCatdef(json) {
   });
 }
 
-function inferFieldDefs(fields) {
-  if (!fields) return [];
-  return Object.entries(fields).map(([label, value], i) => {
+function inferFieldDefs(thingOrFields) {
+  // Accept either a legacy .fields-style object or a flat catdef-family thing.
+  // For a flat thing, exclude envelope keys (catdef, type, consumer-spec
+  // stamps); the caller (loadCatdef in single-thing mode) is responsible for
+  // any further filtering (e.g. identity keys shown in the page header).
+  if (!thingOrFields || typeof thingOrFields !== 'object') return [];
+  const isFlat = !('fields' in thingOrFields);
+  const source = isFlat ? thingOrFields : thingOrFields.fields;
+  if (!source || typeof source !== 'object') return [];
+  return Object.entries(source).filter(([key, val]) => {
+    if (!isFlat) return true;
+    if (key === 'catdef' || key === 'type') return false;
+    if (isConsumerSpecStamp(key, val)) return false;
+    return true;
+  }).map(([label, value], i) => {
     let type = 'String';
     if (typeof value === 'number') type = Number.isInteger(value) ? 'Integer' : 'Number';
     else if (typeof value === 'boolean') type = 'Boolean';
-    else if (typeof value === 'object' && value && value.value && value.unit) type = 'Number';
+    else if (Array.isArray(value)) type = 'Array';
+    else if (typeof value === 'object' && value !== null) {
+      if (value.value !== undefined && value.unit) type = 'Number';
+      else type = 'Object';
+    }
     return { label, type, sort_order: (i+1)*10 };
   });
 }
@@ -640,9 +723,23 @@ function renderGrid(items) {
     return;
   }
   items.forEach((item, idx) => {
-    const fields = item.fields || {};
-    const title = fields.Title || fields.Name || fields.title || fields.name || '(untitled)';
-    const sub = Object.entries(fields).filter(([k]) => !['Title','Name','title','name','Notes','Description','Photos'].includes(k)).slice(0,2).map(([k,v]) => typeof v === 'object' ? JSON.stringify(v) : v).join(' · ');
+    const title = fieldOf(item, 'Title')
+      || fieldOf(item, 'Name')
+      || fieldOf(item, 'name')
+      || fieldOf(item, 'title')
+      || fieldOf(item, 'id')
+      || '(untitled)';
+    // Prefer an explicit description-family field; fall back to the legacy
+    // top-two-other-fields concat for items that don't carry one.
+    let sub = fieldOf(item, 'Description') || fieldOf(item, 'description') || '';
+    if (!sub) {
+      const src = fieldSource(item);
+      sub = Object.entries(src)
+        .filter(([k]) => !['Title','Name','title','name','id','Notes','Description','description','Photos'].includes(k))
+        .slice(0, 2)
+        .map(([k,v]) => typeof v === 'object' ? JSON.stringify(v) : v)
+        .join(' · ');
+    }
     const card = document.createElement('div');
     card.className = 'card';
     card.innerHTML = '<div class="card-img">📷</div><div class="card-body"><div class="card-title">' + esc(title) + '</div><div class="card-sub">' + esc(sub) + '</div></div>';
@@ -652,27 +749,40 @@ function renderGrid(items) {
 }
 
 function showModal(item) {
-  const fields = item.fields || {};
-  const template = DATA.templates.find(t => t.name === item.template) || { field_defs: inferFieldDefs(fields) };
+  // Template lookup falls back to inferred field defs from the item itself
+  // (works for both legacy {fields:{...}} and flat catdef-family items).
+  const template = DATA.templates.find(t => t.name === item.template) || { field_defs: inferFieldDefs(item) };
   let html = '<button class="close" onclick="closeModal()">&times;</button>';
-  html += '<h2>' + esc(fields.Title || fields.Name || item.template || 'Item') + '</h2>';
+  const headTitle = fieldOf(item, 'Title')
+    || fieldOf(item, 'Name')
+    || fieldOf(item, 'name')
+    || fieldOf(item, 'title')
+    || fieldOf(item, 'id')
+    || item.template
+    || 'Item';
+  html += '<h2>' + esc(headTitle) + '</h2>';
 
   template.field_defs.forEach(fd => {
-    const val = fields[fd.label];
+    const val = fieldOf(item, fd.label);
     if (val === undefined || val === null || val === '') return;
     html += '<div class="field"><div class="field-label">' + esc(fd.label) + '</div><div class="field-value">';
-    if (typeof val === 'object' && val.value !== undefined && val.unit) {
+    if (typeof val === 'object' && val !== null && val.value !== undefined && val.unit) {
       html += esc(val.value + ' ' + val.unit);
     } else if (Array.isArray(val)) {
-      html += val.map(v => '<span class="chip">' + esc(v) + '</span>').join('');
+      html += val.map(v => '<span class="chip">' + esc(typeof v === 'object' ? JSON.stringify(v) : v) + '</span>').join('');
+    } else if (typeof val === 'object' && val !== null) {
+      html += '<pre style="white-space:pre-wrap;word-break:break-word;font-size:12px;background:var(--bg);padding:8px;border-radius:4px">' + esc(JSON.stringify(val, null, 2)) + '</pre>';
     } else {
       html += esc(String(val));
     }
     html += '</div></div>';
   });
 
-  // Show any fields not in template
-  Object.entries(fields).forEach(([k,v]) => {
+  // Second pass — render any field present on the item but not in the
+  // template's field_defs. Uses fieldSource so flat items (no .fields)
+  // still surface their top-level keys, minus envelope.
+  const extras = fieldSource(item);
+  Object.entries(extras).forEach(([k,v]) => {
     if (template.field_defs.some(fd => fd.label === k)) return;
     if (v === undefined || v === null || v === '') return;
     html += '<div class="field"><div class="field-label">' + esc(k) + '</div><div class="field-value">' + esc(typeof v === 'object' ? JSON.stringify(v) : String(v)) + '</div></div>';
