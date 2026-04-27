@@ -440,6 +440,23 @@ async function handleFetchRoute(request: Request, ctx: ExecutionContext): Promis
 }
 
 // ── Reference Renderer ──────────────────────────────────────
+//
+// renderPage() returns the entire HTML+JS as a JavaScript template literal.
+// Inside that literal, JS strips any backslash from `\X` where X is not a
+// recognized escape character (n, t, r, b, f, v, 0, ', ", \, x, u). This
+// silently mangles regex literals in the embedded JS — `\d` arrives at the
+// browser as `d`, `\/\/` as `//` (which lexes as a comment-start and breaks
+// the surrounding statement). Always double-escape backslashes inside regex
+// literals in the embedded JS: source `\\d` produces deployed `\d`, etc.
+//
+// Before pushing changes that touch the embedded JS, run:
+//
+//     node tests/embedded-js-syntax.js
+//
+// It evaluates the template literal with the same escape processing the
+// Worker runtime does, then parses the resulting <script> contents through
+// `new Function`. A SyntaxError there means a backslash got eaten and the
+// script block won't execute in the browser.
 
 function renderPage(): Response {
   const html = `<!DOCTYPE html>
@@ -557,7 +574,7 @@ const NAMESPACED_TYPE_RE = /^[a-z][a-z0-9_-]*:[A-Z]/;
 // are envelope markers, not renderable fields.
 function isConsumerSpecStamp(key, val) {
   return typeof val === 'string'
-    && /^\d+\.\d+\.\d+$/.test(val)
+    && /^\\d+\\.\\d+\\.\\d+$/.test(val)
     && /^[a-z][a-z0-9_-]*$/.test(key);
 }
 
@@ -586,7 +603,7 @@ function fieldSource(item) {
 // ── Renderable-path linkification ────────────────────────────
 // File extensions the renderer can render. Path-extension test strips any
 // query/fragment first so "https://host/x.opencatalog?ref=main" still counts.
-const RENDERABLE_EXT_RE = /\.(openthing|opencatalog|catdef)$/i;
+const RENDERABLE_EXT_RE = /\\.(openthing|opencatalog|catdef)$/i;
 
 // Given a string field value, return an absolute URL the renderer can load
 // (via ?url=...), or null if the value isn't a renderable path. Resolution:
@@ -601,7 +618,7 @@ function resolveRenderableLink(value) {
   if (!v) return null;
   const pathOnly = v.replace(/[?#].*$/, '');
   if (!RENDERABLE_EXT_RE.test(pathOnly)) return null;
-  if (/^(https?:)?\/\//i.test(v)) return v;
+  if (/^(https?:)?\\/\\//i.test(v)) return v;
   if (!v.startsWith('/') && CATALOG_SOURCE_URL) {
     try {
       return new URL(v, CATALOG_SOURCE_URL).toString();
