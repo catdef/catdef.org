@@ -38,16 +38,17 @@ const SRC_PATH = path.join(__dirname, "..", "src", "index.ts");
 const src = fs.readFileSync(SRC_PATH, "utf8");
 
 // Find the renderPage HTML template literal. The pattern is conservative:
-// `const html = ` followed by a backtick-delimited template literal that
-// contains `<!DOCTYPE html>` and ends in `</html>` (the renderer's only
-// outer template literal).
-const TEMPLATE_RE = /const\s+html\s*=\s*(`<!DOCTYPE html>[\s\S]*?<\/html>`)\s*;/;
+// `const html = ` followed by an optional tag (e.g. String.raw — see PR #5)
+// then a backtick-delimited literal that contains `<!DOCTYPE html>` and
+// ends in `</html>`. We capture the tag too so eval() applies the same
+// escape-processing rules the Worker runtime applies at request time.
+const TEMPLATE_RE = /const\s+html\s*=\s*((?:String\.raw\s*)?`<!DOCTYPE html>[\s\S]*?<\/html>`)\s*;/;
 const m = TEMPLATE_RE.exec(src);
 if (!m) {
   console.error("FAIL: could not locate renderPage's HTML template literal in", SRC_PATH);
   process.exit(1);
 }
-const templateLiteralSrc = m[1]; // includes the surrounding backticks
+const templateLiteralSrc = m[1]; // tag (optional) + surrounding backticks
 
 // Evaluate the template literal as JavaScript so escape processing matches
 // what the Worker runtime does at request time. The literal contains no

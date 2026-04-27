@@ -442,12 +442,33 @@ async function handleFetchRoute(request: Request, ctx: ExecutionContext): Promis
 // ── Reference Renderer ──────────────────────────────────────
 //
 // renderPage() returns the entire HTML+JS as a JavaScript template literal.
-// Inside that literal, JS strips any backslash from `\X` where X is not a
-// recognized escape character (n, t, r, b, f, v, 0, ', ", \, x, u). This
-// silently mangles regex literals in the embedded JS — `\d` arrives at the
-// browser as `d`, `\/\/` as `//` (which lexes as a comment-start and breaks
-// the surrounding statement). Always double-escape backslashes inside regex
-// literals in the embedded JS: source `\\d` produces deployed `\d`, etc.
+// In a plain template literal, JS would strip any backslash from `\X` where
+// X is not a recognized escape character (n, t, r, b, f, v, 0, ', ", \, x,
+// u). That silently mangled regex literals in the embedded JS — `\d` arrived
+// at the browser as `d`, `\/\/` as `//` (which lexes as a comment-start and
+// breaks the surrounding statement; see PR #4 commit message for the full
+// failure mode).
+//
+// We avoid that bug class by tagging the outer template literal with
+// String.raw, which preserves all backslashes verbatim. Regex literals in
+// the embedded JS can be written naturally — `/\.(...)$/`, `/\d+/`,
+// `/\/\//` — and they deploy as written.
+//
+// Side effect of String.raw: standard escape sequences (\n, \t, \r, \\,
+// etc.) inside the template are NOT processed by the outer-template's
+// escape rules. They pass through as the literal characters `\` + `n`. This
+// is fine because the only consumer of the resulting string is the browser,
+// and the browser's JS parser processes its own escape sequences when it
+// parses string literals inside the embedded JS — so a JS source line
+// `'hello\nworld'` still ends up as "hello" + newline + "world" at JS
+// execution time, regardless of whether the outer template processed \n.
+// HTML and CSS in the body don't use backslash escapes, so they're
+// unaffected.
+//
+// If you remove the String.raw tag, you MUST re-apply per-regex
+// double-escaping (\\d for \d, \\. for \., \\/ for /) — see PR #4 for the
+// pattern. The syntax guard test will catch the script-fails subset of the
+// bug class either way; it does not catch functional regex bugs.
 //
 // Before pushing changes that touch the embedded JS, run:
 //
@@ -459,7 +480,7 @@ async function handleFetchRoute(request: Request, ctx: ExecutionContext): Promis
 // script block won't execute in the browser.
 
 function renderPage(): Response {
-  const html = `<!DOCTYPE html>
+  const html = String.raw`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -574,7 +595,7 @@ const NAMESPACED_TYPE_RE = /^[a-z][a-z0-9_-]*:[A-Z]/;
 // are envelope markers, not renderable fields.
 function isConsumerSpecStamp(key, val) {
   return typeof val === 'string'
-    && /^\\d+\\.\\d+\\.\\d+$/.test(val)
+    && /^\d+\.\d+\.\d+$/.test(val)
     && /^[a-z][a-z0-9_-]*$/.test(key);
 }
 
@@ -603,7 +624,7 @@ function fieldSource(item) {
 // ── Renderable-path linkification ────────────────────────────
 // File extensions the renderer can render. Path-extension test strips any
 // query/fragment first so "https://host/x.opencatalog?ref=main" still counts.
-const RENDERABLE_EXT_RE = /\\.(openthing|opencatalog|catdef)$/i;
+const RENDERABLE_EXT_RE = /\.(openthing|opencatalog|catdef)$/i;
 
 // Given a string field value, return an absolute URL the renderer can load
 // (via ?url=...), or null if the value isn't a renderable path. Resolution:
@@ -618,7 +639,7 @@ function resolveRenderableLink(value) {
   if (!v) return null;
   const pathOnly = v.replace(/[?#].*$/, '');
   if (!RENDERABLE_EXT_RE.test(pathOnly)) return null;
-  if (/^(https?:)?\\/\\//i.test(v)) return v;
+  if (/^(https?:)?\/\//i.test(v)) return v;
   if (!v.startsWith('/') && CATALOG_SOURCE_URL) {
     try {
       return new URL(v, CATALOG_SOURCE_URL).toString();
