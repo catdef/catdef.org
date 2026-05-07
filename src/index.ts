@@ -972,19 +972,32 @@ function landingPage(): Response {
       display: flex; flex-direction: column; align-items: center;
       min-height: 100vh; padding: 4rem 2rem;
     }
-    .container { max-width: 640px; width: 100%; }
+    .container { max-width: 720px; width: 100%; }
     h1 { font-size: 2.5rem; font-weight: 700; margin-bottom: 0.5rem; }
     h1 span { color: #58a6ff; }
     .tagline { color: #8b949e; font-size: 1.2rem; margin-bottom: 2rem; }
     .description { line-height: 1.7; margin-bottom: 2rem; color: #c9d1d9; }
     a { color: #58a6ff; text-decoration: none; }
     a:hover { text-decoration: underline; }
-    .links { display: flex; gap: 1.5rem; margin-bottom: 3rem; flex-wrap: wrap; }
-    .links a {
-      padding: 0.6rem 1.2rem; border: 1px solid #30363d; border-radius: 6px;
-      font-size: 0.95rem; transition: border-color 0.2s;
+    .cta { display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .cta a {
+      padding: 0.7rem 1.3rem; border-radius: 6px;
+      font-size: 0.95rem; font-weight: 600; transition: all 0.2s;
     }
-    .links a:hover { border-color: #58a6ff; text-decoration: none; }
+    .cta a.primary { background: #238636; color: #fff; border: 1px solid #2ea043; }
+    .cta a.primary:hover { background: #2ea043; text-decoration: none; }
+    .cta a.secondary { background: #21262d; color: #e6edf3; border: 1px solid #30363d; }
+    .cta a.secondary:hover { border-color: #58a6ff; text-decoration: none; }
+    .links { display: flex; gap: 1.5rem; margin-bottom: 3rem; flex-wrap: wrap; font-size: 0.9rem; }
+    .pitch { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 3rem; }
+    @media (max-width: 600px) { .pitch { grid-template-columns: 1fr; } }
+    .card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 1.25rem;
+    }
+    .card h3 { font-size: 1rem; color: #e6edf3; margin-bottom: 0.5rem; }
+    .card p { color: #8b949e; font-size: 0.92rem; line-height: 1.55; }
+    .card .examples { color: #c9d1d9; font-size: 0.88rem; margin-top: 0.5rem; }
     .section { margin-bottom: 2rem; }
     .section h2 { font-size: 1.1rem; color: #8b949e; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
     code { background: #161b22; padding: 0.2em 0.4em; border-radius: 3px; font-size: 0.9em; }
@@ -1001,16 +1014,43 @@ function landingPage(): Response {
       <strong>catdef</strong> defines two complementary concepts:
       <strong>OpenThing</strong> — a schema for describing any real-world object, and
       <strong>OpenCatalog</strong> — a schema for organizing collections of things.
-      Any conforming runtime can read a catdef and render a working application.
-      An AI that can see a photograph can write a catdef.
+      A key concept is that catalogs are recursive, so that a catalog may contain sub-catalogs.
+      Any conforming runtime can read, write, and render valid OpenCatalogs and OpenThings.
+      The catdef spec also describes how to serialize both catalogs and things into single files,
+      which may then be transported and shared.
     </p>
 
+    <div class="cta">
+      <a class="primary" href="${REPO_URL}">View on GitHub</a>
+      <a class="secondary" href="https://render.catdef.org/?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcatdef%2Fcatdef-spec%2Fmain%2Fcanonical%2Friverside-heritage-reference-v1.4.opencatalog">Try the Reference Renderer</a>
+    </div>
     <div class="links">
-      <a href="/render">Reference Renderer</a>
       <a href="${SPEC_URL}">Read the Spec</a>
-      <a href="${REPO_URL}">GitHub</a>
       <a href="${REPO_URL}/tree/main/conformance">Test Suite</a>
       <a href="/feedback">Feedback Feed</a>
+    </div>
+
+    <div class="pitch">
+      <div class="card">
+        <h3>For any collection</h3>
+        <p>One format, every domain. Whatever you can describe, you can catalog.</p>
+        <p class="examples">Museum artifacts · vintage watches · wine cellars · magazine archives · artist portfolios · field-guide species · concert calendars · photo timelines.</p>
+      </div>
+
+      <div class="card">
+        <h3>AI-native authoring</h3>
+        <p>An AI that can see a photograph can write a catdef. Schemas, data, and presentation are all expressed in one declarative format that any model can produce and any runtime can consume — zero context backfill required.</p>
+      </div>
+
+      <div class="card">
+        <h3>One file. Complete product.</h3>
+        <p>Schema, data, and presentation in a single <code>.opencatalog</code> file. Drop it into any conformant renderer and a working application comes out the other side. Transportable, shareable, self-contained.</p>
+      </div>
+
+      <div class="card">
+        <h3>The test suite is the standard</h3>
+        <p>164 conformance tests define what catdef means. Anyone can build a renderer; if it passes the tests, it's catdef. No vendor, no lock-in, no proprietary extensions required.</p>
+      </div>
     </div>
 
     <div class="section">
@@ -1026,7 +1066,7 @@ function landingPage(): Response {
 {
   "type": "gap",
   "agent": "claude-3.5",
-  "catdef_version": "1.3",
+  "catdef_version": "1.4",
   "context": "Cataloging a wine collection",
   "field_type": "Date",
   "message": "No way to express vintage year ranges",
