@@ -89,26 +89,31 @@ export function listResources(): McpResource[] {
  * Returns null for unknown URIs (caller maps to RPC_NOT_FOUND).
  */
 export async function readResource(uri: string): Promise<McpResourceContents | null> {
-  // Stable resources
-  const stable = RESOURCE_MAP[uri];
+  // Stable resources — try the URI as-is first, then with optional ".md"
+  // toggled, so callers can read e.g. "catdef://spec/CATDEF_SPEC" without
+  // the extension. Per CA-012.
+  const stable = RESOURCE_MAP[uri] ?? RESOURCE_MAP[uri + ".md"] ?? RESOURCE_MAP[uri.replace(/\.md$/, "")];
   if (stable) {
     return await fetchAndWrap(uri, stable.path, stable.mime);
   }
 
-  // Dynamic: catdef://spec/decisions/CA-NNN
-  const decisionMatch = /^catdef:\/\/spec\/decisions\/(CA-\d{3,})$/.exec(uri);
+  // Dynamic decisions: catdef://spec/decisions/CA-NNN[.md]
+  // OR              : catdef://decisions/CA-NNN[.md]      (no spec/ prefix)
+  // Per CA-012, all four shapes resolve to the same artifact.
+  const decisionMatch = /^catdef:\/\/(?:spec\/)?decisions\/(CA-\d{3,})(?:\.md)?$/.exec(uri);
   if (decisionMatch) {
     return await fetchAndWrap(uri, `decisions/${decisionMatch[1]}.md`, "text/markdown");
   }
 
-  // Dynamic: catdef://spec/proposals/<slug>
-  const proposalMatch = /^catdef:\/\/spec\/proposals\/([a-z0-9-]+)$/.exec(uri);
+  // Dynamic proposals: catdef://spec/proposals/<slug>[.md]
+  // OR              : catdef://proposals/<slug>[.md]
+  const proposalMatch = /^catdef:\/\/(?:spec\/)?proposals\/([a-z0-9-]+)(?:\.md)?$/.exec(uri);
   if (proposalMatch) {
     return await fetchAndWrap(uri, `proposals/${proposalMatch[1]}.md`, "text/markdown");
   }
 
   // Synthetic: catdef://spec/conformance/index — list of test files
-  if (uri === "catdef://spec/conformance/index") {
+  if (uri === "catdef://spec/conformance/index" || uri === "catdef://conformance/index") {
     return await listConformanceTests(uri);
   }
 

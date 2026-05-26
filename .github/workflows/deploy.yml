@@ -1,0 +1,45 @@
+name: Deploy to Cloudflare Workers
+
+# Triggers on push to main and on manual workflow_dispatch. Per CA-013 Call 2,
+# replaces the prior manual-only `wrangler deploy` posture.
+#
+# Required repo secret:
+#   CLOUDFLARE_API_TOKEN  — Cloudflare API token with the "Edit Cloudflare Workers"
+#                           template scope (Account: Workers Scripts:Edit,
+#                           User: User Details:Read, Zone: Workers Routes:Edit
+#                           for the catdef.org zone). See DEPLOYING.md for token-
+#                           creation and rotation steps.
+#
+# Optional repo variable:
+#   CLOUDFLARE_ACCOUNT_ID — Account id; if omitted, wrangler resolves from the token.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Deploy via wrangler
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: deploy

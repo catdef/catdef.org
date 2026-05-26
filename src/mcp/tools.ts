@@ -9,6 +9,7 @@
 import type { AuthContext, McpTool } from "./types";
 import { tierAtLeast } from "./auth";
 import { allocateCaNnn, refreshCounterFromGitHub, parseCaNnn } from "./counter";
+import { githubContents } from "./github";
 
 export interface ToolsEnv {
   DB: D1Database;
@@ -184,7 +185,7 @@ async function catdefDescribe(
 ): Promise<unknown> {
   return {
     server_name: "catdef-org-mcp",
-    server_version: "0.1.0",
+    server_version: "0.1.1",
     spec_version: "1.4",
     spec_repo: "https://github.com/catdef/catdef-spec",
     canonical_surface_proposal: "https://github.com/catdef/catdef-spec/blob/main/proposals/catdef-org-mcp-canonical-surface.md",
@@ -254,23 +255,18 @@ async function catdefListDecisions(
   const status = String(args.status ?? "all");
   const limit = Math.min(Number(args.limit ?? 50), 200);
 
-  const headers: HeadersInit = {
-    "Accept": "application/vnd.github+json",
-    "User-Agent": "catdef-org-mcp-tools",
-    "X-GitHub-Api-Version": "2022-11-28",
-  };
-  if (env.GITHUB_TOKEN) {
-    (headers as Record<string, string>)["Authorization"] = `Bearer ${env.GITHUB_TOKEN}`;
+  // Per CA-011: use the shared 401-resilient helper so an invalid
+  // GITHUB_TOKEN secret falls back to unauthenticated (60/hr limit;
+  // sufficient at current traffic). Rotating the token restores 5000/hr.
+  let entries: Array<{ name: string; type: string; download_url: string }>;
+  try {
+    entries = await githubContents<Array<{ name: string; type: string; download_url: string }>>(
+      "decisions",
+      env.GITHUB_TOKEN,
+    );
+  } catch (e) {
+    throw rpcInternal((e as Error).message);
   }
-
-  const resp = await fetch("https://api.github.com/repos/catdef/catdef-spec/contents/decisions", {
-    headers,
-    cf: { cacheTtl: 300, cacheEverything: true },
-  });
-  if (!resp.ok) {
-    throw rpcInternal(`GitHub API ${resp.status} listing decisions/`);
-  }
-  const entries = await resp.json() as Array<{ name: string; type: string; download_url: string }>;
   const caEntries = entries
     .filter(e => e.type === "file" && /^CA-\d{3,}\.md$/.test(e.name))
     .sort((a, b) => b.name.localeCompare(a.name))  // newest first

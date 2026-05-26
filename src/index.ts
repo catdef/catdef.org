@@ -26,26 +26,17 @@ import { allocateCaNnn } from "./mcp/counter";
 
 export interface Env {
   DB: D1Database;
-  GITHUB_TOKEN: string;  // Secret: fine-grained PAT with Issues write on catdef/catdef-spec
+  // Secret: GitHub PAT used by the canonical-surface MCP tools
+  // (catdef_list_decisions, refresh-counter) to raise the public-repo
+  // read rate limit from 60/hr to 5000/hr. The createGitHubIssue
+  // auto-creation on legacy POST /feedback was sunset by CA-013 Call 1,
+  // so the token's old `issues: write` scope is no longer required;
+  // public_repo read (the default for most fine-grained PATs) suffices.
+  GITHUB_TOKEN: string;
 }
 
 const SPEC_URL = "https://github.com/catdef/catdef-spec/blob/main/CATDEF_SPEC.md";
 const REPO_URL = "https://github.com/catdef/catdef-spec";
-const GITHUB_REPO = "catdef/catdef-spec";
-
-const TYPE_LABELS: Record<string, string> = {
-  feature_request: "RFE",
-  bug: "RFE",
-  gap: "RFE",
-  clarification: "RFE",
-  success_story: "success-story",
-};
-
-const SEVERITY_LABELS: Record<string, string> = {
-  blocker: "severity: blocker",
-  major: "severity: major",
-  minor: "severity: minor",
-};
 
 const VALID_TYPES = ["feature_request", "bug", "gap", "clarification", "success_story"];
 const VALID_SEVERITIES = ["minor", "major", "blocker"];
@@ -90,95 +81,6 @@ async function checkRateLimit(db: D1Database, ipHash: string): Promise<boolean> 
     "SELECT COUNT(*) as count FROM feedback WHERE ip_hash = ? AND created_at > ?"
   ).bind(ipHash, cutoff).first<{ count: number }>();
   return (result?.count ?? 0) < RATE_LIMIT;
-}
-
-// ── GitHub Issue Creation ────────────────────────────────────
-
-async function createGitHubIssue(
-  env: Env,
-  publicId: string,
-  type: string,
-  severity: string,
-  agent: string,
-  catdefVersion: string,
-  context: string,
-  fieldType: string | null,
-  message: string,
-): Promise<string | null> {
-  if (!env.GITHUB_TOKEN) return null;
-
-  const typeLabel = TYPE_LABELS[type] ?? "RFE";
-  const sevLabel = SEVERITY_LABELS[severity] ?? "severity: minor";
-
-  const title = `[${publicId}] ${type === "success_story" ? "🎉 " : ""}${message.slice(0, 100)}${message.length > 100 ? "..." : ""}`;
-
-  const bodyParts = [
-    `**${publicId}** — filed via catdef.org/feedback`,
-    "",
-    `| Field | Value |`,
-    `|-------|-------|`,
-    `| Type | \`${type}\` |`,
-    `| Severity | \`${severity}\` |`,
-    `| Agent | \`${agent}\` |`,
-    `| catdef version | \`${catdefVersion}\` |`,
-    fieldType ? `| Field type | \`${fieldType}\` |` : null,
-    context ? `| Context | ${context} |` : null,
-    "",
-    "## Description",
-    "",
-    message,
-    "",
-    "---",
-    "*Filed automatically via [catdef.org](https://catdef.org). Discuss and vote with reactions.*",
-  ].filter(Boolean).join("\n");
-
-  const labels = [typeLabel, sevLabel, `catdef-${catdefVersion}`, `agent:${agent.split(" ")[0]}`];
-
-  try {
-    const resp = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/issues`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "catdef-org-worker",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-      body: JSON.stringify({
-        title,
-        body: bodyParts,
-        labels,
-      }),
-    });
-
-    if (resp.ok) {
-      const issue = await resp.json() as { html_url: string };
-      return issue.html_url;
-    }
-
-    // If labels don't exist yet, retry without them
-    const resp2 = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/issues`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${env.GITHUB_TOKEN}`,
-        "Accept": "application/vnd.github+json",
-        "User-Agent": "catdef-org-worker",
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-      body: JSON.stringify({
-        title,
-        body: bodyParts,
-      }),
-    });
-
-    if (resp2.ok) {
-      const issue = await resp2.json() as { html_url: string };
-      return issue.html_url;
-    }
-
-    return null;
-  } catch {
-    return null;
-  }
 }
 
 // ── /fetch — server-side proxy for the URL-loadable renderer ─
@@ -1171,10 +1073,12 @@ export default {
           return json({ error: "Rate limit exceeded. Max 20 submissions per hour." }, 429);
         }
 
-        // Generate public ID
+        // Generate public ID (CA-NNN per CA-009, via shared allocator)
         const publicId = await generatePublicId(env.DB);
 
-        // Insert
+        // Insert. Status defaults to 'received'; private at submission per CA-008
+        // privacy posture (formalized in CA-013 Call 1 — submission method no
+        // longer determines privacy state).
         await env.DB.prepare(`
           INSERT INTO feedback (public_id, type, severity, agent, catdef_version, context, field_type, message, ip_hash)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1190,23 +1094,17 @@ export default {
           ipHash,
         ).run();
 
-        // Create GitHub issue for public discussion
-        const issueUrl = await createGitHubIssue(
-          env, publicId, type, severity,
-          String(body.agent ?? "unknown"),
-          String(body.catdef_version ?? "1.3"),
-          String(body.context ?? ""),
-          body.field_type ? String(body.field_type) : null,
-          message,
-        );
+        // Per CA-013 Call 1: the legacy createGitHubIssue auto-creation is
+        // sunset. Submissions are private at submission for all paths (HTML
+        // form AND MCP); public visibility arrives only via curation (a
+        // CA-NNN decision artifact citing the item, or elevated-tier
+        // catdef_attach_decision with make_public:true). Existing GitHub
+        // issues from past submissions remain as historical record.
 
         return json({
           ok: true,
           id: publicId,
-          issue_url: issueUrl,
-          message: issueUrl
-            ? "Feedback received. Discuss at the GitHub issue."
-            : "Feedback received. Thank you.",
+          message: "Feedback received. Triage status is queryable via the catdef_get_feedback_status MCP tool (with the api-key used to submit) or via GET /feedback/" + publicId + ".",
         }, 201);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Unknown error";

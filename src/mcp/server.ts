@@ -38,7 +38,7 @@ export interface ServerEnv {
 
 const PROTOCOL_VERSION = "2025-03-26";
 const SERVER_NAME = "catdef-org-mcp";
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = "0.1.1";
 
 const INITIALIZE_INSTRUCTIONS = `catdef.org/mcp is the canonical AI-peer surface for catdef substrate work.
 

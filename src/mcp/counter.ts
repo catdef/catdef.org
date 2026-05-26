@@ -14,12 +14,13 @@
 // Format: CA-NNN (no zero-padding mandated; CA-001 .. CA-999 are 3-digit,
 // CA-1000+ extends naturally; matches existing decisions/ filenames).
 
+import { githubContents } from "./github";
+
 export interface CounterEnv {
   DB: D1Database;
 }
 
 const META_KEY = "ca_nnn_counter";
-const DECISIONS_REPO = "catdef/catdef-spec";
 const DECISIONS_PATH = "decisions";
 
 /**
@@ -82,22 +83,13 @@ export async function refreshCounterFromGitHub(
   ).bind(META_KEY).first<{ value: string }>();
   const previous = previousRow ? parseInt(previousRow.value, 10) : 0;
 
-  const headers: HeadersInit = {
-    "Accept": "application/vnd.github+json",
-    "User-Agent": "catdef-org-mcp-counter",
-    "X-GitHub-Api-Version": "2022-11-28",
-  };
-  if (githubToken) {
-    (headers as Record<string, string>)["Authorization"] = `Bearer ${githubToken}`;
-  }
+  // Use the shared 401-resilient helper: tries with token first, falls
+  // back to unauth if the token is invalid/expired. Per CA-011.
+  const entries = await githubContents<Array<{ name: string; type: string }>>(
+    DECISIONS_PATH,
+    githubToken,
+  );
 
-  const apiUrl = `https://api.github.com/repos/${DECISIONS_REPO}/contents/${DECISIONS_PATH}`;
-  const resp = await fetch(apiUrl, { headers });
-  if (!resp.ok) {
-    throw new Error(`GitHub API returned ${resp.status} fetching decisions/`);
-  }
-
-  const entries = await resp.json() as Array<{ name: string; type: string }>;
   let githubMax = 0;
   for (const entry of entries) {
     if (entry.type !== "file") continue;
