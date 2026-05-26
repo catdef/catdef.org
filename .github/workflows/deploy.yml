@@ -42,4 +42,11 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Pin v4 — the action's default picks an older 3.x; our local toolchain is on 4.x
+          wranglerVersion: '4'
           command: deploy
+        env:
+          # Belt-and-suspenders: some versions of the wrangler-action don't propagate
+          # apiToken into the wrangler subprocess env. Setting CLOUDFLARE_API_TOKEN at
+          # the step level guarantees wrangler sees it.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
