@@ -7,10 +7,22 @@
  *   GET  /fetch?url= — server-side proxy that fetches a remote catdef and returns JSON
  *                      (used by the renderer's ?url= bootstrap; SSRF-guarded; size-capped; cached)
  *   GET  /spec       — redirect to GitHub spec
- *   POST /feedback   — structured feedback intake (agents + humans)
- *   GET  /feedback   — public feed of all feedback
- *   GET  /feedback/:id — single feedback item
+ *   POST /feedback   — legacy structured feedback intake (humans + agents); now
+ *                      mints CA-NNN per CA-009 and routes through the unified queue
+ *                      shared with /mcp's catdef_report_feedback tool
+ *   GET  /feedback   — public feed (legacy CDF-NNNN + new CA-NNN)
+ *   GET  /feedback/:id — single feedback item (accepts CDF-NNNN and CA-NNN)
+ *   POST /mcp        — canonical AI-peer MCP surface (per CA-008 Track D)
+ *                      JSON-RPC 2.0 over HTTP; three-tier bearer auth;
+ *                      see proposals/catdef-org-mcp-canonical-surface.md
+ *   POST /mcp/admin/refresh-counter — elevated tier; re-syncs CA-NNN counter
+ *                                      against the live decisions/ directory
  */
+
+import { handleMcpRequest } from "./mcp/server";
+import { resolveAuth, tierAtLeast } from "./mcp/auth";
+import { adminRefreshCounter } from "./mcp/tools";
+import { allocateCaNnn } from "./mcp/counter";
 
 export interface Env {
   DB: D1Database;
@@ -62,10 +74,14 @@ async function hashIP(ip: string): Promise<string> {
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
+// Per decisions/CA-009.md (CA-NNN namespace unification), new feedback gets
+// CA-NNN identifiers from the unified counter. CDF-NNNN is sunset; legacy
+// rows persist as historical references. The counter is shared with the
+// /mcp tool surface via src/mcp/counter.ts so both submission paths
+// (legacy POST /feedback and tools/call catdef_report_feedback) allocate
+// from the same sequence.
 async function generatePublicId(db: D1Database): Promise<string> {
-  const result = await db.prepare("SELECT MAX(id) as max_id FROM feedback").first<{ max_id: number | null }>();
-  const next = (result?.max_id ?? 0) + 1;
-  return `CDF-${String(next).padStart(4, "0")}`;
+  return await allocateCaNnn({ DB: db });
 }
 
 async function checkRateLimit(db: D1Database, ipHash: string): Promise<boolean> {
@@ -1075,9 +1091,12 @@ function landingPage(): Response {
     </div>
 
     <div class="section">
-      <h2>MCP</h2>
-      <p>The feedback endpoint is also available as an MCP tool for AI agents that want to
-      report spec gaps programmatically while building catalogs.</p>
+      <h2>MCP — the canonical AI-peer surface</h2>
+      <p>An MCP server is live at <code>https://catdef.org/mcp</code> (streamable-HTTP transport, JSON-RPC 2.0). AI peers
+      can read the full spec as MCP resources (e.g. <code>catdef://spec/CATDEF_SPEC.md</code>), ground themselves with
+      <code>catdef_lookup</code> and <code>catdef_list_decisions</code>, and (with a self-serve api-key) file structured
+      feedback via <code>catdef_report_feedback</code>. The maintainer/strategist seats use elevated keys for queue triage.
+      See <a href="${REPO_URL}/blob/main/proposals/catdef-org-mcp-canonical-surface.md">the canonical-surface proposal</a> for the full surface description.</p>
     </div>
   </div>
   <div class="footer">
@@ -1216,16 +1235,37 @@ export default {
       return json({ feedback: result.results, count: result.results.length });
     }
 
-    // GET /feedback/:id — single feedback item
-    const feedbackMatch = pathname.match(/^\/feedback\/(CDF-\d+)$/);
+    // GET /feedback/:id — single feedback item (CA-NNN or legacy CDF-NNNN)
+    const feedbackMatch = pathname.match(/^\/feedback\/((?:CA-\d{3,}|CDF-\d+))$/);
     if (feedbackMatch && request.method === "GET") {
       const result = await env.DB.prepare(
-        "SELECT public_id, type, severity, agent, catdef_version, context, field_type, message, created_at FROM feedback WHERE public_id = ?"
+        "SELECT public_id, type, severity, agent, catdef_version, context, field_type, message, created_at, status, decision_id FROM feedback WHERE public_id = ?"
       ).bind(feedbackMatch[1]).first();
       if (!result) {
         return json({ error: "Not found" }, 404);
       }
       return json(result);
+    }
+
+    // POST /mcp — canonical AI-peer MCP surface per CA-008 Track D
+    if (pathname === "/mcp" && request.method === "POST") {
+      return handleMcpRequest(request, env);
+    }
+
+    // POST /mcp/admin/refresh-counter — elevated tier only; re-syncs CA-NNN
+    // counter against the live catdef-spec/decisions/ directory per CA-009 Dir 2.
+    if (pathname === "/mcp/admin/refresh-counter" && request.method === "POST") {
+      const auth = await resolveAuth(request, env);
+      if (!auth) return json({ error: "Invalid Authorization" }, 401);
+      if (!tierAtLeast(auth, "elevated")) {
+        return json({ error: "Elevated tier required" }, 403);
+      }
+      try {
+        const out = await adminRefreshCounter(env);
+        return json({ ok: true, counter: out });
+      } catch (e) {
+        return json({ ok: false, error: e instanceof Error ? e.message : "Refresh failed" }, 500);
+      }
     }
 
     return json({ error: "Not found" }, 404);

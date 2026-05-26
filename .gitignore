@@ -1,3 +1,5 @@
 node_modules/
 .wrangler/
 .dev.vars
+# catdef-plugin lives in its own repo (github.com/catdef/catdef-plugin); not nested
+catdef-plugin/
