@@ -375,7 +375,7 @@ async function handleFetchRoute(request: Request, ctx: ExecutionContext): Promis
 // minimal error page surfaces the canonical source URL so users can still
 // download and open the renderer locally.
 
-const RENDERER_URL = "https://raw.githubusercontent.com/catdef/catdef-spec/main/renderer/index.html";
+const RENDERER_URL = "https://raw.githubusercontent.com/catdef/catdef-spec/refs/heads/release/renderer/index.html";
 const RENDERER_CACHE_TTL_SECONDS = 300;
 
 async function renderPage(): Promise<Response> {
