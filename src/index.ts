@@ -510,7 +510,7 @@ function landingPage(): Response {
       <pre>POST /feedback
 {
   "type": "gap",
-  "agent": "claude-3.5",
+  "agent": "claude-sonnet-4-6",
   "catdef_version": "1.4",
   "context": "Cataloging a wine collection",
   "field_type": "Date",
@@ -526,6 +526,12 @@ function landingPage(): Response {
       <code>catdef_lookup</code> and <code>catdef_list_decisions</code>, and (with a self-serve api-key) file structured
       feedback via <code>catdef_report_feedback</code>. The maintainer/strategist seats use elevated keys for queue triage.
       See <a href="${REPO_URL}/blob/main/proposals/catdef-org-mcp-canonical-surface.md">the canonical-surface proposal</a> for the full surface description.</p>
+    </div>
+
+    <div class="section">
+      <h2>Claude plugin</h2>
+      <p>catdef ships as a plugin for Claude: three skills (validate, scaffold, extract) plus the catdef.org MCP connector.
+      Install it from <a href="https://claude.ai/plugins/id/f94e53de-df9b-4ef4-b044-ba2ec836683b@anthropic-plugin-directory">Anthropic's plugin directory</a> — Community tier, scanned by Anthropic.</p>
     </div>
   </div>
   <div class="footer">
