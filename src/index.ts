@@ -533,6 +533,12 @@ function landingPage(): Response {
       <p>catdef ships as a plugin for Claude: three skills (validate, scaffold, extract) plus the catdef.org MCP connector.
       Install it from <a href="https://claude.ai/plugins/id/f94e53de-df9b-4ef4-b044-ba2ec836683b@anthropic-plugin-directory">Anthropic's plugin directory</a> — Community tier, scanned by Anthropic.</p>
     </div>
+
+    <div class="section">
+      <h2>OrgDef viewer</h2>
+      <p>An open-source example viewer that renders orgdef organizations as interactive charts — seats, reporting lines, and cross-links, with every seat's charter a click away.
+      It runs the Confused Gorilla published library at <a href="https://confusedgorilla.com/organization/">confusedgorilla.com/organization</a>, and the source is yours to reuse: <a href="https://github.com/catdef/orgchart-viewer">github.com/catdef/orgchart-viewer</a> (MIT).</p>
+    </div>
   </div>
   <div class="footer">
     catdef is an open standard, licensed under MIT.
