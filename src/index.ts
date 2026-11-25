@@ -422,6 +422,12 @@ function landingPage(): Response {
     h1 span { color: #58a6ff; }
     .tagline { color: #8b949e; font-size: 1.2rem; margin-bottom: 2rem; }
     .description { line-height: 1.7; margin-bottom: 2rem; color: #c9d1d9; }
+    .notice { background: #161b22; border: 1px solid #30363d; border-left: 3px solid #238636; border-radius: 8px; padding: 1.25rem; margin-bottom: 2rem; }
+    .notice h3 { font-size: 1rem; color: #e6edf3; margin-bottom: 0.5rem; }
+    .notice h3 .date { color: #484f58; font-size: 0.85rem; font-weight: 400; }
+    .notice p { color: #8b949e; font-size: 0.92rem; line-height: 1.55; margin-bottom: 0.5rem; }
+    .notice p:last-child { margin-bottom: 0; }
+    .notice strong { color: #e6edf3; }
     a { color: #58a6ff; text-decoration: none; }
     a:hover { text-decoration: underline; }
     .cta { display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; }
@@ -464,6 +470,14 @@ function landingPage(): Response {
       The catdef spec also describes how to serialize both catalogs and things into single files,
       which may then be transported and shared.
     </p>
+
+    <div class="notice">
+      <h3>CATX — a new name for the carrier <span class="date">· November 25, 2026</span></h3>
+      <p>catdef's carrier — the single file that transports catalogs and things — has a new name: <strong>CATX</strong> (CATalog Xchange).</p>
+      <p>With spec 1.5, <code>.catx</code> becomes the extension for catalogs, things, and schemas alike; the document type travels inside the file. New MIME types and a <code>catx</code> envelope key succeed the catio-era names.</p>
+      <p>The data model does not change, and every existing <code>.opencatalog</code> and <code>.openthing</code> file keeps reading, indefinitely.</p>
+      <p><em>The full rulings are <a href="https://github.com/catdef/catdef-plugin/blob/main/memos/2026-11-25-carrier-rename-rulings.md">documented on GitHub</a>.</em></p>
+    </div>
 
     <div class="cta">
       <a class="primary" href="${REPO_URL}">View on GitHub</a>
