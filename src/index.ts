@@ -199,7 +199,10 @@ function ssrfCheck(rawUrl: string): SSRFResult {
 
 type UpstreamResult = {
   status: number;
-  body: string | null;
+  // Bytes, never a decoded string. CATIO bundles are ZIP archives and are not
+  // valid UTF-8; decoding here previously rejected every bundle with a 502.
+  // The proxy is transport, not a parser — it does not inspect or unpack.
+  body: Uint8Array | null;
   contentType: string | null;
   error?: string;
   finalUrl?: string;
@@ -276,16 +279,9 @@ async function fetchUpstream(rawUrl: string): Promise<UpstreamResult> {
       let pos = 0;
       for (const c of chunks) { buf.set(c, pos); pos += c.byteLength; }
 
-      let body: string;
-      try {
-        body = new TextDecoder("utf-8", { fatal: true }).decode(buf);
-      } catch {
-        return { status: 502, body: null, contentType: null, error: "Upstream body is not valid UTF-8" };
-      }
-
       return {
         status: 200,
-        body,
+        body: buf,
         contentType: resp.headers.get("Content-Type"),
         finalUrl: currentUrl,
       };
@@ -326,10 +322,16 @@ async function handleFetchRoute(request: Request, ctx: ExecutionContext): Promis
 
   let response: Response;
   if (result.status === 200 && result.body) {
-    response = new Response(result.body, {
+    // Content-sniff the PK signature so a bundle is not served as JSON. The
+    // upstream Content-Type is not passed through: raw.githubusercontent serves
+    // .opencatalog as text/plain, and relabelling every JSON fetch would be a
+    // regression. It remains available in X-Upstream-Content-Type.
+    const b = result.body;
+    const isZip = b.length >= 2 && b[0] === 0x50 && b[1] === 0x4b;
+    response = new Response(b, {
       status: 200,
       headers: {
-        "Content-Type": "application/json; charset=utf-8",
+        "Content-Type": isZip ? "application/zip" : "application/json; charset=utf-8",
         "Cache-Control": `public, max-age=${CACHE_TTL_OK_SECONDS}`,
         "X-Upstream-Content-Type": result.contentType ?? "unknown",
         "X-Upstream-Url": result.finalUrl ?? target,
